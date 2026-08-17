@@ -1,0 +1,60 @@
+# Single-GPU (RTX 5090, 32GB) serving of Qwen3.8-27B NVFP4 with
+# OSCAR int2 KV cache + the model's built-in MTP draft (EAGLE).
+#
+# Weights are downloaded once into the named volume by the fetch job; the server
+# then mounts that volume. Adjust STEPS/DRAFT (spec depth) via the environment.
+services:
+  fetch:
+    image: python:3.12-slim
+    volumes: [models:/models]
+    entrypoint: ["bash","-lc"]
+    command:
+      - pip -q install huggingface_hub && python -c "from huggingface_hub import snapshot_download; snapshot_download('RadixArk/Qwen3.8-27B-NVFP4', local_dir='/models/Qwen3.8-27B-NVFP4')"
+    restart: "no"
+  server:
+    build: .
+    image: qwen38-27b-oscar-mtp
+    depends_on: [fetch]
+    command:
+      - python3
+      - -m
+      - sglang.launch_server
+      - --model-path=/models/Qwen3.8-27B-NVFP4
+      - --host=0.0.0.0
+      - --port=30000
+      - --context-length=262144
+      - --trust-remote-code
+      - --kv-cache-dtype=int2
+      - --kv-cache-quant-group-size=256
+      - --prefill-attention-backend=triton
+      - --decode-attention-backend=triton
+      - --moe-runner-backend=flashinfer_cutlass
+      - --mem-fraction-static=0.95
+      - --max-total-tokens=280000
+      - --max-mamba-cache-size=16
+      - --max-running-requests=2
+      - --mamba-ssm-dtype=bfloat16
+      - --chunked-prefill-size=2048
+      - --max-prefill-tokens=2048
+      - --disable-prefill-cuda-graph
+      - --speculative-algorithm=EAGLE
+      - --speculative-num-steps=${STEPS:-4}
+      - --speculative-eagle-topk=${TOPK:-2}
+      - --speculative-num-draft-tokens=${DRAFT:-6}
+      - --tool-call-parser=qwen3_coder
+      - --reasoning-parser=qwen3
+    environment:
+      - SGLANG_OSCAR_K_ROTATION_PATH=/models/calib/rotations_new/k_rotation_qqt_r_h_pbr.pt
+      - SGLANG_OSCAR_V_ROTATION_PATH=/models/calib/rotations_new/v_rotation_sst_r_h_pbr.pt
+    ports: ["30000:30000"]
+    shm_size: 16g
+    ipc: host
+    gpus: all
+    restart: unless-stopped
+    volumes:
+      - models:/models
+      - ./oscar_port:/models/oscar_port:ro
+      - ./patches:/models/patches:ro
+      - ./rotations:/models/calib/rotations_new:ro
+volumes:
+  models:
