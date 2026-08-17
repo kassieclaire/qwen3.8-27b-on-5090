@@ -41,4 +41,28 @@ prose; higher on code). Spec depth is tunable: `STEPS=3 DRAFT=4` ≈ 128 tok/s,
   dequant oracle to int2 noise floor (~0.004 rel-err).
 - The int2→bf16 divergence is small: KL ≈ 0.08, top-1 agreement 94% (teacher-forced,
   aligned). Verified agentically in pi.dev: 5/5 multi-stage coding tasks.
-- CUDA graphs stay on for decode/verify/draft (prefill graphs disabled by design).
+
+## VRAM
+
+Peak usage **~30.3 GiB of 32 GiB** (weights ~21 GB + int2 KV pool + decode/verify/draft
+CUDA-graph pools + mamba state) — measured flat across decode *and* 2048-token prefill
+chunks, no transient spikes. That leaves **~1.5 GB spare**, so a lightweight desktop
+(terminal + browser ≈ 0.6–1.0 GB) fits alongside; anything GPU-accelerated (games,
+compositing) will contend and may OOM the server. If you need more headroom: drop
+`max-total-tokens` (KV pool scales with it) or `mem-fraction-static` — each 20k tokens
+of `max-total-tokens` frees ~0.5 GB.
+
+## Why prefill CUDA graphs are off (and decode graphs on)
+
+SGLang captures prefill graphs by default; this stack disables them
+(`--disable-prefill-cuda-graph`) for two measured reasons on 32 GB:
+
+1. **VRAM**: prefill graph capture for 2048-token chunks leaves **0.00 GiB free**
+   device memory (log-verified); the server then runs at the edge of OOM with Triton
+   kernels device-loading *after* startup. Host-level usage goes from ~30.3 → 31.8 GiB.
+2. **No benefit**: prefill is compute-bound (MoE GEMMs + the int2 tile kernel run for
+   milliseconds per chunk), so launch-overhead elimination buys nothing — measured
+   8,561 tok/s with graphs vs 8,737–8,789 without.
+
+Decode/verify/draft graphs stay **on** — that regime is launch-bound (hundreds of tiny
+kernels per cycle at batch 1–8), which is exactly what graphs fix.
