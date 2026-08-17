@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
-*.pt
 *.safetensors
 .env
+# calibrated rotations ARE part of the repo (needed at runtime)
+!rotations/*.pt
